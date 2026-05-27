@@ -4,7 +4,7 @@ This project implements a full calibration pipeline for a **front-steering, fron
 
 The code is written in **Octave / MATLAB** and is entirely contained in `calibration.m`. It works end-to-end: it loads the raw log, preprocesses the encoder data, builds a first-guess trajectory, runs a non-linear least-squares optimization, and finally saves the diagnostic plots in the `plots/` directory.
 
-> **Authors:** Serena Trovalusci · Andrea Baldi
+> **Author:** Serena Trovalusci
 
 ---
 
