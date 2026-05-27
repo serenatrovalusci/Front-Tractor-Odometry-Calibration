@@ -4,21 +4,59 @@ This project implements a full calibration pipeline for a **front-steering, fron
 
 The code is written in **Octave / MATLAB** and is entirely contained in `calibration.m`. It works end-to-end: it loads the raw log, preprocesses the encoder data, builds a first-guess trajectory, runs a non-linear least-squares optimization, and finally saves the diagnostic plots in the `plots/` directory.
 
+> **Authors:** Serena Trovalusci · Andrea Baldi
+
+---
+
 ## Parameters Being Estimated
 
 The state vector `x` contains 7 unknowns:
 
-| Index | Symbol        | Meaning                                              |
-|-------|---------------|------------------------------------------------------|
-| 1     | `k_steer`     | Steering encoder gain (ticks → radians scaling)      |
-| 2     | `k_traction`  | Traction encoder gain (ticks → meters scaling)       |
-| 3     | `b`           | Wheelbase / axis length                              |
-| 4     | `steer_offset`| Mechanical zero offset of the steering encoder      |
-| 5     | `x_sb`        | Sensor-to-base translation along x                   |
-| 6     | `y_sb`        | Sensor-to-base translation along y                   |
-| 7     | `theta_sb`    | Sensor-to-base rotation                              |
+| Index | Symbol | Meaning |
+|-------|--------|---------|
+| 1 | `k_steer` | Steering encoder gain (ticks → radians scaling) |
+| 2 | `k_traction` | Traction encoder gain (ticks → meters scaling) |
+| 3 | `b` | Wheelbase / axis length |
+| 4 | `steer_offset` | Mechanical zero offset of the steering encoder |
+| 5 | `x_sb` | Sensor-to-base translation along x |
+| 6 | `y_sb` | Sensor-to-base translation along y |
+| 7 | `theta_sb` | Sensor-to-base rotation |
 
 The first four parameters describe the **kinematic model** of the vehicle, the last three describe the **extrinsic calibration** between the tracked sensor and the robot base.
+
+---
+
+## Repository Structure
+
+```
+.
+├── calibration.m      # full pipeline (entry point + local functions)
+├── dataset.txt        # input log: time, ticks, model pose, tracker pose
+├── plots/             # auto-generated diagnostic figures
+│   ├── 01_base_trajectory.png
+│   ├── 02_pre_calibration.png
+│   ├── 04_final_trajectory.png
+│   └── 05_error_analysis.png
+└── README.md
+```
+
+---
+
+## How to Run
+
+```octave
+>> calibration
+```
+
+The script expects the file `dataset.txt` to be in the working directory. Upon completion it prints:
+
+- the chi value at every Gauss-Newton iteration,
+- the final 7-parameter vector,
+- the RMSE on position and heading,
+
+and writes the four diagnostic plots to the `plots/` subfolder.
+
+---
 
 ## Pipeline Overview
 
@@ -31,9 +69,7 @@ The dataset is parsed with a simple line-by-line reader (`load_dataset`) that ex
 Two preprocessing steps are critical before anything else can work:
 
 - **Tracker re-referencing**: the tracker is expressed in an arbitrary world frame. I re-express every pose with respect to the initial one by pre-multiplying by `inv(v2t(tracker(1,:)))`, so the reference trajectory starts exactly at `[0,0,0]`. This makes it directly comparable to the odometry, which always starts at the origin.
-
 - **Traction encoder overflow handling**: the traction encoder is a 32-bit unsigned counter that wraps around. I compute incremental deltas `Δticks = t(i+1) − t(i)` and fix wrap-arounds by adding/subtracting `2^32` whenever the jump exceeds `±2^31`. This restores a clean, monotonic signal.
-
 - **Steer encoder sign conversion**: the steering encoder is a 13-bit absolute counter in the range `[0, 8191]`. I remap values above `4096` to the negative half `[−4096, −1]` so that the signal behaves as a signed angle around zero.
 
 ### 2. Model Pose Estimate with Nominal Parameters
@@ -49,7 +85,9 @@ y_{i}     = y_{i−1}     + Δl · sin(θ_{i−1}) · cos(Δφ)
 θ_{i}     = θ_{i−1}     + Δl · sin(Δφ) / b
 ```
 
-This gives a first estimate of the base trajectory (`estimate_model_pose`) and is plotted against the dataset's `model_pose` as a sanity check (Figure 1).
+This gives a first estimate of the base trajectory (`estimate_model_pose`) and is plotted against the dataset's `model_pose` as a sanity check.
+
+![Base trajectory vs vendor model](plots/01_base_trajectory.png)
 
 ### 3. Initial State and Sensor Pose Estimate
 
@@ -62,7 +100,7 @@ This is a data-driven heuristic: it gives the optimizer a warm start where the p
 
 The full sensor pose predictor is `estimate_sensor_pose`, which integrates the same kinematic model as before but then composes each base pose with the sensor-to-base transform `T_bs = v2t([x_sb, y_sb, theta_sb])`. The final trajectory is re-anchored to start at `[0,0,0]`, so that the optimizer does not have to compensate for a constant translational offset of roughly 1.4 m due to the sensor extrinsic.
 
-Figure 2 shows the tracker, the trajectory predicted with the nominal parameters, and the one predicted with the initial-state parameters — the improvement is already substantial.
+![Tracker, nominal parameters, and warm-start parameters](plots/02_pre_calibration.png)
 
 ### 4. Non-Linear Least-Squares Calibration
 
@@ -88,17 +126,15 @@ Computing them once per outer iteration (and reusing them inside the inner accum
 
 ### 5. Results and Error Analysis
 
-After calibration, the full-resolution predicted trajectory is regenerated with the final parameters and compared against the tracker:
+After calibration, the full-resolution predicted trajectory is regenerated with the final parameters and compared against the tracker.
 
-- **Trajectory plot** (Figure 4) overlays the calibrated odometry and the ground truth.
-- **Temporal error plot** (Figure 5) shows the position error magnitude `sqrt(ex² + ey²)` and the heading error in degrees, both as a function of the sample index.
-- **Global metrics**: RMSE on `(x, y)` (cm) and RMSE on `θ` (deg) are printed to the console.
+![Final calibrated trajectory vs ground truth](plots/04_final_trajectory.png)
 
-All figures are saved to `plots/` as low-resolution PNGs (`-r72`) so they can be inspected without re-running the script.
+![Position and heading error over time](plots/05_error_analysis.png)
 
-#### Final Output
+---
 
-Running the pipeline on `dataset.txt` produces the following results:
+## Results
 
 ```
 --- Final Calibration Parameters ---
@@ -117,6 +153,8 @@ A few observations on the recovered parameters:
 - The sensor extrinsic `[x_sb, y_sb, theta_sb] ≈ [1.796, 0.027, 0.0004]` indicates that the tracker is mounted roughly `1.8 m` forward of the base origin, almost perfectly centered laterally and with negligible rotation — physically plausible for a sensor placed on the front of the vehicle.
 - The residual error (`9.13 cm` on position, `2.54°` on heading) is consistent with the noise level of the tracker and the simplicity of the kinematic model.
 
+---
+
 ## Key Techniques Used
 
 - **Rigid transform utilities** (`v2t`, `t2v`) for moving between vector and homogeneous-matrix representations of SE(2) poses.
@@ -127,31 +165,3 @@ A few observations on the recovered parameters:
 - **Numerical Jacobians** (central differences) to avoid hand-derived expressions.
 - **Measurement subsampling** in the inner loop for efficiency without loss of calibration quality.
 - **Angular error normalization** via `atan2(sin, cos)` wherever heading differences are computed.
-
-## How to Run
-
-```octave
->> calibration
-```
-
-The script expects the file `dataset.txt` to be in the working directory. Upon completion it prints:
-
-- the chi value at every Gauss-Newton iteration,
-- the final 7-parameter vector,
-- the RMSE on position and heading,
-
-and writes the four diagnostic plots to the `plots/` subfolder.
-
-## File Layout
-
-```
-.
-├── calibration.m      # full pipeline (entry point + local functions)
-├── dataset.txt        # input log: time, ticks, model pose, tracker pose
-├── plots/             # auto-generated diagnostic figures
-│   ├── 01_base_trajectory.png
-│   ├── 02_pre_calibration.png
-│   ├── 04_final_trajectory.png
-│   └── 05_error_analysis.png
-└── README.md
-```
